@@ -1,0 +1,1039 @@
+---
+title: "01.1_explore_comple_matrix_complete_metadata"
+output: html_document
+---
+
+# Load libraries
+```{r}
+spsm <- suppressPackageStartupMessages
+spsm(library(tidyverse))
+spsm(library(data.table))
+spsm(library(reshape2))
+spsm(library(ggcorrplot))
+spsm(library(ComplexHeatmap))
+spsm(library(circlize))
+spsm(library(RColorBrewer))
+spsm(library(caret))
+
+```
+
+# Out directory
+
+```{r}
+out_data <- "../results_new/01.1_data_exploration"
+if (!dir.exists(out_data)){
+  dir.create(out_data)
+}
+```
+
+# Load Normalized data
+
+```{r}
+
+# Load data (RPM). RPM is the reads normalized the total reads in the sample 
+rpm1 <- fread("../data/rpm/Auto_IvaGomes_THGE_29-05-2024_B_Chip1_torrent-server_6371.rpm.bcmatrix.txt") %>% column_to_rownames("Gene")
+rpm2 <- fread("../data/rpm/Auto_IvaGomes_THGE_25-06-2024_A_Chip2_torrent-server_21.rpm.bcmatrix.txt")%>% column_to_rownames("Gene")
+rpm3 <- fread("../data/rpm/Auto_IvaGomes_THGE_25-06-2024_B_Chip3_torrent-server_23.rpm.bcmatrix.xls.txt")%>% column_to_rownames("Gene")
+rpm4 <- fread("../data/rpm/Auto_IvaGomes_THGE_01-07-2024_D_Chip4_torrent-server_46.rpm.bcmatrix.txt")%>% column_to_rownames("Gene")
+
+#Modify rpm4 names
+colnames(rpm4)[2:5] <- paste0(colnames(rpm4)[2:5], "2")
+
+a <- list(rpm1, rpm2, rpm3, rpm4)
+rpms <- lapply(a, function(x) x %>% select(-c(Target, COSMIC_CGC_FLAG, NCBI_NAME, HGNC_SYMBOL_ACC, MIM_MORBID_DESCRIPTION, ENTREZ_GENE_ID, U133PLUS2_PSID)))
+rpms <- do.call("cbind", rpms)
+
+# Load matching samples to replace colnames 
+match <- list(fread("../data/expression_data/chip1_matching_samples.txt"), 
+               fread("../data/expression_data/chip2_matching_samples.txt"), 
+               fread("../data/expression_data/chip3_matching_samples.txt"), 
+               fread("../data/expression_data/chip4_matching_samples_mod.txt")
+)
+
+match <- do.call("rbind", match)
+match_vector <- match$`Sample Name`
+names(match_vector) <- match$`Barcode ID`
+
+# Replace the names in the expression table
+colnames(rpms) <- match_vector[colnames(rpms)]
+#any(duplicated(colnames(rpms)))
+```
+
+
+# Load metadata (Subject and Sample are in different tables)
+
+```{r}
+metadata_subject <- fread("../data/metadata_full.csv") %>% select(-c(V23, V24))
+metadata_sample <- fread("../data/metadata_complete.csv")
+```
+
+## Handle and merge sample and subject level information
+
+```{r}
+# Filter the subject metadata to use only the ones we have sequence data for
+subjects_with_seq_data <-  substring(colnames(rpms), 2)
+subjects_with_seq_data <- gsub("\\.\\d", "", subjects_with_seq_data) # Removes ".1" 
+metadata_subject.seq_samples <- metadata_subject %>% filter(`Wound sample` %in% subjects_with_seq_data) 
+dim(metadata_subject.seq_samples) # [1] 23 22
+# Merge with the sample level metadata 
+
+metadata_sample$Subject <- substring(metadata_sample$Sample, 2)
+metadata_sample$Subject <- gsub("\\.\\d", "", metadata_sample$Subject) # Removes ".1" 
+
+metadata_sample.full <- merge(metadata_sample, metadata_subject.seq_samples, by.x = "Subject", by.y = "Wound sample")
+``` 
+
+# Explore data at subject level 
+
+```{r}
+print(table(metadata_subject.seq_samples$institute))
+print(table(metadata_subject.seq_samples$localisation))
+print(table(metadata_subject.seq_samples$`method of wound application`))
+print(table(metadata_subject.seq_samples$`wound closing`))
+print(table(metadata_subject.seq_samples$`informations by`))
+```
+
+I can group the locale of the wound in big groups.
+
+```{r}
+
+# Define mapping to general areas
+location_mapping <- function(raw_locations) {
+  normalized <- tolower(trimws(raw_locations))
+  
+  # Map to general areas
+  dplyr::case_when(
+    grepl("chest|thoraco|upper chest", normalized) ~ "Chest",
+    grepl("abdomen|body center|flank|groin|hip|pelvis", normalized) ~ "Abdomen/Pelvis",
+    grepl("arm|hand", normalized) ~ "Upper Limb",
+    grepl("leg|thigh|tight|femoral", normalized) ~ "Lower Limb",
+    grepl("neck", normalized) ~ "Neck",
+    grepl("\\?|or", normalized) ~ "Ambiguous",
+    TRUE ~ "Unknown"  # Cathes unanticipated entries
+  )
+}
+
+metadata_subject.seq_samples$wound_location <- location_mapping(metadata_subject.seq_samples$localisation)
+```
+
+
+Wound location (general location)
+
+```{r}
+metadata_subject.seq_samples %>% 
+  filter(wound_location != "") %>% 
+ggplot(aes(x = wound_location)) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Distribution of Wound Location",
+    x = "Wound Location",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(~institute)
+
+```
+Kiel has more wounds in the Adbomen/Pelvis region, whyle Duesseldorf and Cologne have more in chest
+This might be a confounding factor
+
+
+Distribution of wound application
+
+```{r}
+
+metadata_subject.seq_samples %>% 
+  filter(`method of wound application` != "") %>% 
+ggplot(aes(x = `method of wound application`)) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Distribution of Wound Application Methods",
+    x = "Method of Wound Application",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(~institute)
+```
+The distribution across institutes does not seem unbalanced
+
+Wound closing
+
+```{r}
+metadata_subject.seq_samples %>% 
+  filter(`wound closing` != "") %>% 
+ggplot(aes(x = `wound closing`)) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Distribution of Wound Application Methods",
+    x = "Method of Wound Application",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(~institute)
+```
+Might be related to Wound closing. 
+Duesseldorf wound were closed with a Sawn
+Cologne wounds were not closed
+Kiel is mostly missing data
+
+
+Information by
+
+```{r}
+metadata_subject.seq_samples %>% 
+  filter(`informations by` != "") %>% 
+ggplot(aes(x = `informations by`)) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Distribution of Information by",
+    x = "Information by",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  facet_wrap(~institute)
+```
+
+Distribution of information might also be important. Kiel is all police reports
+Cologne is balanced
+Dusseldorf is doctor letters
+
+# Explore Sample level information
+
+Handle the data, One Hot encode it and put NAs
+
+```{r}
+# Convert the location in the body
+metadata_sample.full$body_location <- location_mapping(metadata_sample.full$localisation)
+metadata_sample.full$PMI <- metadata_sample.full$PMI.x
+metadata_sample.full$Chip <- as.character(metadata_sample.full$Chip)
+
+# Filter columns
+metadata_sample.full.selected <- metadata_sample.full %>% 
+  mutate(information_by = `informations by`,
+         wound_closing = `wound closing`,
+         group = ifelse(substr(metadata_sample.full$Sample, 1, 1) == "R", "Control", "Wound")) %>%
+  select(c(Subject, Sample, Age, Gender, RIN, Chip, PMI, institute, information_by, wound_closing, body_location, group))
+
+categorical_vars <- metadata_sample.full.selected %>%
+  select(where(~ is.character(.x) || is.factor(.x))) %>%
+  names()
+
+# Remove Subject and sample 
+categorical_vars <- categorical_vars[!categorical_vars %in% c("Subject", "Sample")]
+
+# Encode as dataframe and replace the missing values for NA
+metadata_sample.full.selected <- metadata_sample.full.selected %>% as.data.frame() %>%
+  mutate(across(where(~ is.character(.) | is.factor(.)), ~ na_if(.x, "")))
+
+# Put NA in the missing values
+encoded_df <- metadata_sample.full.selected 
+
+
+# Add dummie variables
+for (var in categorical_vars) {
+  dummies <- dummyVars(reformulate(var), data = metadata_sample.full.selected)
+  one_hot_data <- predict(dummies, newdata = metadata_sample.full.selected)
+  colnames(one_hot_data) <- gsub("_", " ", colnames(one_hot_data))
+  
+  # Add NAs  
+  NA_rows <- rowSums(one_hot_data) == 0
+  one_hot_data[NA_rows, 1:ncol(one_hot_data)] <- NA
+  
+  if (ncol(one_hot_data) == 2){
+    one_hot_data <- one_hot_data[,1, drop = FALSE]
+  }
+  
+  # Bind and remove original column
+  encoded_df <- encoded_df %>%
+    select(-all_of(var)) %>%
+    bind_cols(one_hot_data)
+}
+
+```
+
+## Heatmap of pairwise observation
+
+```{r fig.height=10, fig.width=9}
+encoded_df_to_cor <- encoded_df %>% select(-c(Subject, Sample))
+
+cor_mat <- cor(encoded_df_to_cor, use = "pairwise.complete.obs")
+
+
+#row.names(df_encoded) <- row.names(metadata)
+pdf(file.path(out_data, "01_corr_metadata.pdf"), w = 9, h = 10)
+ggcorrplot(cor_mat, 
+           method = "square", 
+           type = "lower", 
+           lab = TRUE, 
+           lab_size = 3, 
+           colors = c("blue", "white", "red"),
+           title = "Correlation Heatmap (One-Hot Encoded)",
+           ggtheme = theme_minimal())
+
+dev.off()
+
+
+ggcorrplot(cor_mat, 
+           method = "square", 
+           type = "lower", 
+           lab = TRUE, 
+           lab_size = 3, 
+           colors = c("blue", "white", "red"),
+           title = "Correlation Heatmap (One-Hot Encoded)",
+           ggtheme = theme_minimal())
+```
+
+# Unsupervised Analysis
+
+
+## PCA
+
+```{r}
+
+# PCA on the RMP data ----
+rpms <- rpms[, -c(39,40)]
+
+# Log
+rpms_log <- log(rpms+1)
+
+## Keep top genes
+sd_genes <- apply(rpms_log, 1, sd)
+top5000_var_genes <- order(sd_genes, decreasing = T)[1:5000]
+rpms_top <- rpms_log[top5000_var_genes,] %>% t()
+## Scale 
+rpms_top <- scale(rpms_top, center = T, scale = T)
+# Run PCA
+pca_data <- prcomp(rpms_top)
+
+pc_scores <- pca_data$x[,c(1:10)]
+
+# Get proportion of variance explained
+pc_var <- pca_data$sdev^2
+pc_var_explained <- round(100 * pc_var / sum(pc_var), 1)  # % variance
+pc_names <- paste0("PC", 1:10, " (", pc_var_explained[1:10], "%)")
+
+colnames(pc_scores) <- pc_names
+rownames(pc_scores) <- rownames(rpms_top)  # Ensure rownames match metadata
+
+metadata_aligned <- encoded_df[match(rownames(pc_scores), encoded_df$Sample), ]
+pc_meta <- cbind(pc_scores, metadata_aligned)
+metadata_aligned <- metadata_aligned %>% select(-c(Subject, Sample))
+
+
+
+cor_matrix <- matrix(NA, nrow = ncol(pc_scores), ncol = ncol(metadata_aligned))
+rownames(cor_matrix) <- colnames(pc_scores)
+colnames(cor_matrix) <- colnames(metadata_aligned)
+
+for (i in 1:ncol(pc_scores)) {
+  for (j in 1:ncol(metadata_aligned)) {
+    x <- pc_scores[,i]
+    y <- metadata_aligned[,j]
+    
+    cor_matrix[i, j] <- cor(x, y, use = "complete.obs")
+  }
+}
+
+
+cor_df <- melt(cor_matrix, varnames = c("PC", "Metadata"), value.name = "cor")
+
+pdf(file.path(out_data, "01_PC_vs_metadata.pdf"), w = 10, h = 8)
+ggplot(cor_df, aes(x = Metadata, y = PC, fill = cor)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", cor)), size = 3) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = "Correlation / R²", limits = c(-1, 1)) +
+  theme_minimal() +
+  coord_fixed() +
+  scale_y_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Association between First 10 PCs and Metadata") + 
+  xlab("") + ylab("") 
+dev.off()
+
+ggplot(cor_df, aes(x = Metadata, y = PC, fill = cor)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", cor)), size = 3) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = "Correlation / R²", limits = c(-1, 1)) +
+  theme_minimal() +
+  coord_fixed() +
+  scale_y_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Association between First 10 PCs and Metadata") + 
+  xlab("") + ylab("") 
+
+pdf(file.path(out_data, "01_PC_vs_metadat_clean.pdf"), w = 10, h = 8)
+ggplot(cor_df, aes(x = Metadata, y = PC, fill = cor)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = ifelse(abs(cor) > 0.3, sprintf("%.2f", cor), "")), size = 3) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = "Correlation / R²", limits = c(-1, 1)) +
+  theme_minimal() +
+  coord_fixed() +
+  scale_y_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Association between First 10 PCs and Metadata") + 
+  xlab("") + ylab("") 
+dev.off()
+
+ggplot(cor_df, aes(x = Metadata, y = PC, fill = cor)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = ifelse(abs(cor) > 0.3, sprintf("%.2f", cor), "")), size = 3) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = "Correlation / R²", limits = c(-1, 1)) +
+  theme_minimal() +
+  coord_fixed() +
+  scale_y_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Association between First 10 PCs and Metadata") + 
+  xlab("") + ylab("")
+
+```
+PCA of the data reveals the main axis of variation in the dataset. 
+
+AGE is correlated with PC1 and PC3, 
+RIN is related to PC3 and 4
+PMI is probably the bigest axis of vriation, being correlated with PC1 and PC3
+CHIP is related to PC8 and PC1
+
+Institute is related to PC1 and PC3, but I feel this might be counfonded. 
+Information by Police or Doctor, tell us something about if its a clinical death or not. This seems to be related to PC3. Due to the correlation between this and the insitutes, I feel this migh be one of the confounding factors.  The Wound closing is also related with the PC3, with a higher correlation. Due to missing values I feel this partially explains the PC3 correlation. 
+There is a high correlation in Kiel/Dusseldorf and PC1 which I am not sure what is about. 
+
+Body location is also one of the major axis of variation, as location in Chest, and Pelvis is related to PC1. 
+
+With this analysis I am not sure what the institute confounding factors is about completely. I think it might be related to the clinical or criminal case, as these variables are correlated, and they both are correlated with PC3 and PMI (Its also correlated with the institute, and PMI is realted with PC1. )
+
+## Hierachical clustering
+
+Hierarchical clustering of the Wound Samples ONLY
+
+### Add time information to the samples
+
+```{r}
+#metadata_sample.full$`Wound age`
+# metadata_sample.full$wound_age <- c("2 days", "2 days", "3 days", "3 days", "7 days",  "7 days", "13 days", "13 days",
+#                                     "minutes", "minutes", "minutes", "minutes", "2 days", "2 days", "hours", "hours",
+#                                     "1 day", "1 day", "22 days", "22 days", "12 days", "12 days",  "12 days", "12 days", 
+#                                     "2 days", "2 days",  "minutes", "minutes", "minutes", "minutes", "hours", "hours",
+#                                     "minutes", "minutes", 
+#                                     "28 days", "28 days", "minutes", "minutes", "minutes", "minutes", "minutes", "minutes",
+#                                     "minutes", "minutes", "2 days", "2 days", "7 days", "7 days")
+
+
+metadata_sample.full$wound_age <- c("2/3 days", "2/3 days", "2/3 days", "2/3 days", "7 days",  "7 days", "13 days", "13 days",
+                                    "minutes-hours", "minutes-hours", "minutes-hours",
+                                    "minutes-hours", "2/3 days", "2/3 days", "minutes-hours", "minutes-hours",
+                                    "1 day", "1 day", "22 days", "22 days", "12 days", "12 days",  "12 days", "12 days", 
+                                    "2/3 days", "2/3 days",  "minutes-hours", "minutes-hours", 
+                                    "minutes-hours", "minutes-hours", "minutes-hours", "minutes-hours",
+                                    "minutes-hours", "minutes-hours", 
+                                    "28 days", "28 days", "minutes-hours", "minutes-hours",
+                                    "minutes-hours", "minutes-hours", "minutes-hours",
+                                    "minutes-hours", "minutes-hours", "minutes-hours", "2/3 days", 
+                                    "2/3 days", "7 days", "7 days")
+
+
+metadata_sample.wound_age <- metadata_sample.full %>% select(Subject, wound_age) %>% distinct()
+```
+
+
+### Using the top 5000 most variable genes
+
+```{r}
+encoded_df.wound <- encoded_df[encoded_df$groupControl == 0,]
+encoded_df.wound <- encoded_df.wound[encoded_df.wound$Sample %in% colnames(rpms_log), ]
+
+rpms.log.wound <- rpms_log %>% select(all_of(encoded_df.wound$Sample))
+
+# Remove from the metadata the extra samples 
+metadata_sample.full.selected <- metadata_sample.full.selected[metadata_sample.full.selected$Sample %in% colnames(rpms_log), ]
+
+metadata_sample.full.selected.wound <- metadata_sample.full.selected %>% 
+  mutate_if(is.character, ~ ifelse(is.na(.), "MISSING", .)) %>% 
+  filter(group == "Wound") %>% 
+  merge(metadata_sample.wound_age, by = "Subject")
+
+
+## Keep top genes
+sd_genes <- apply(rpms.log.wound, 1, sd)
+top5000_var_genes <- order(sd_genes, decreasing = T)[1:5000]
+rpms.log.wound.top <- rpms.log.wound[top5000_var_genes,] %>% t()
+## Scale 
+rpms.log.wound.top <- scale(rpms.log.wound.top, center = T, scale = T)
+
+dist_mat <- dist(rpms.log.wound.top)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+type_case_colors <- brewer.pal(n = 4, "Set3")
+gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Grey
+)
+wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  case_type = metadata_sample.full.selected.wound$`informations by`,
+  body_section = metadata_sample.full.selected.wound$body_location,
+  Sex = metadata_sample.full.selected.wound$Gender,
+  Chip = metadata_sample.full.selected.wound$Chip,
+  wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    case_type = type_case_colors,
+    body_section = body_section,
+    Sex = gender_colour,
+    Chip = chip_colour,
+    wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(rpms.log.wound.top),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_top5000_variable_genes.pdf"), w = 12)
+draw(ht)
+dev.off()
+```
+
+
+### Using the differential expressed genes
+
+```{r}
+# Load DEGs 
+degs_control_vs_wound <- read.csv("../results_new/02_degs/control_vs_wound.txt",  sep = "\t", dec = ",", skip = 4) %>% 
+  filter(FDR.P.val < 0.05)
+
+## Keep top DEGs
+rpms.log.wound.degs <- rpms.log.wound[degs_control_vs_wound$ID,] %>% t()
+## Scale 
+rpms.log.wound.degs <- scale(rpms.log.wound.degs, center = T, scale = T)
+
+dist_mat <- dist(rpms.log.wound.degs)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Grey
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(rpms.log.wound.top),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_degs.pdf"), w = 12)
+draw(ht)
+dev.off()
+```
+
+### With DEGs using the top 500 genes (effect size)
+
+```{r}
+n_genes_to_use <- 500
+
+# Load DEGs 
+degs_control_vs_wound <- read.csv("../results_new/02_degs/control_vs_wound.txt",  sep = "\t", dec = ",", skip = 4) %>% 
+  filter(FDR.P.val < 0.05) %>% 
+  arrange(abs(Fold.Change)) %>% 
+  tail(n_genes_to_use)
+
+## Keep top DEGs
+rpms.log.wound.degs <- rpms.log.wound[degs_control_vs_wound$ID,] %>% t()
+## Scale 
+rpms.log.wound.degs <- scale(rpms.log.wound.degs, center = T, scale = T)
+
+dist_mat <- dist(rpms.log.wound.degs)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Black
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(rpms.log.wound.top),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_top_500_degs.pdf"), w = 12)
+draw(ht)
+dev.off()
+```
+
+### Remove the effect of the confounding factors 
+
+Since data is in the log scale I can just do minus (log(A) - log(b) = log(a/b))
+```{r}
+encoded_df.control <- encoded_df[encoded_df$groupControl == 1,]
+encoded_df.control <- encoded_df.control[encoded_df.control$Sample %in% colnames(rpms_log), ]
+rpms.log.control <- rpms_log %>% select(all_of(encoded_df.control$Sample))
+# Normalize the data by the controls
+rpms.log.ratio <- rpms.log.wound - rpms.log.control
+
+# Keep top 5000 genes
+sd_genes <- apply(rpms.log.ratio, 1, sd)
+top5000_var_genes <- order(sd_genes, decreasing = T)[1:5000]
+rpms.log.ratio.top <- rpms.log.ratio[top5000_var_genes,] %>% t()
+
+## Scale 
+rpms.log.ratio.top <- scale(rpms.log.ratio.top, center = T, scale = T)
+
+dist_mat <- dist(rpms.log.ratio.top)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Black
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(rpms.log.ratio.top),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_normalized_by_controls.pdf"), w = 12)
+draw(ht)
+dev.off()
+
+
+```
+This heatmap is similar to the heatmap with the top variable genes. I can also try to only use the DEGs here
+
+### Using DEGs and ratios
+
+```{r}
+degs_control_vs_wound <- read.csv("../results_new/02_degs/control_vs_wound.txt",  sep = "\t", dec = ",", skip = 4) %>% 
+  filter(FDR.P.val < 0.05)
+
+## Keep top DEGs
+rpms.log.ratio.degs <- rpms.log.ratio[degs_control_vs_wound$ID,] %>% t()
+## Scale 
+rpms.log.ratio.degs <- scale(rpms.log.ratio.degs, center = T, scale = T)
+
+# Create HC
+dist_mat <- dist(rpms.log.ratio.degs)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Black
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(rpms.log.ratio.degs),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_normalized_by_controls_degs.pdf"), w = 12)
+draw(ht)
+dev.off()
+
+
+```
+Remove the effect of RIN, which is the only confounding factor I have not taken into account? I don't think it matters enough to change the clustering
+
+
+### Remove the effect of covariates
+
+Run a linear regression across all genes, correcting for confounding variables 
+
+```{r}
+library(lme4)
+
+# Remove the effect of different variables
+residuals <- apply(rpms.log.wound, 1, function(x){
+  all_data <- metadata_sample.full.selected.wound
+  all_data$expression <- x
+  residuals <- resid(lmer(expression ~ Age + Gender + RIN + PMI + (1|Chip), data = all_data))
+  }
+  )
+
+
+residuals <- t(residuals)
+```
+
+### Plot using the top 5000 variable genes
+
+```{r}
+# Keep top 5000 genes
+sd_genes <- apply(residuals, 1, sd)
+top5000_var_genes <- order(sd_genes, decreasing = T)[1:5000]
+residuals.top <- residuals[top5000_var_genes,] %>% t()
+
+## Scale 
+residuals.top <- scale(residuals.top, center = T, scale = T)
+
+row.names(residuals.top) <- colnames(rpms.log.wound)
+dist_mat <- dist(residuals.top)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Black
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(residuals.top),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_residuals.pdf"), w = 12)
+draw(ht)
+dev.off()
+```
+### Plot using the DEGs 
+
+```{r}
+degs_control_vs_wound <- read.csv("../results_new/02_degs/control_vs_wound.txt",  sep = "\t", dec = ",", skip = 4) %>% 
+  filter(FDR.P.val < 0.05)
+
+
+# Keep DEGs
+residuals.degs <- residuals[degs_control_vs_wound$ID,] %>% t()
+
+## Scale 
+residuals.degs <- scale(residuals.degs, center = T, scale = T)
+
+dist_mat <- dist(residuals.degs)  # transpose to cluster samples
+hc <- hclust(dist_mat, method = "ward.D2") # Create HC object
+
+# Create annotation object
+#type_case_colors <- brewer.pal(n = 4, "Set3")
+#gender_colour <-  brewer.pal(n = 3, "Set1")[c(1,3)]
+#chip_colour <- brewer.pal(n = 10, "Set3")[c(1,3,5,7)]
+#body_section <- c("#0072B2", "#56B4E9", "#D55E00", "#009E73", "#F0E442")
+wound_time <- c(
+  "#E69F00",  # Orange
+  "#56B4E9",  # Sky Blue
+  "#009E73",  # Bluish Green
+  "#F0E442",  # Yellow
+  "#0072B2",  # Blue
+  "#D55E00",  # Vermilion
+  "#CC79A7",  # Reddish Purple
+  "#000000"   # Black
+)
+#wound_closing <-  brewer.pal(n = 3, "Set2")
+
+
+#names(type_case_colors) <- unique(metadata_sample.full.selected.wound$information_by)
+#names(gender_colour) <- unique(metadata_sample.full.selected.wound$Gender)
+#names(chip_colour) <- unique(metadata_sample.full.selected.wound$Chip)
+#names(body_section) <- unique(metadata_sample.full.selected.wound$body_location)
+names(wound_time) <- unique(metadata_sample.full.selected.wound$wound_age)
+#names(wound_closing) <- unique(metadata_sample.full.selected.wound$wound_closing)
+
+ha <- HeatmapAnnotation(
+  #case_type = metadata_sample.full.selected.wound$`informations by`,
+  #body_section = metadata_sample.full.selected.wound$body_location,
+  #Sex = metadata_sample.full.selected.wound$Gender,
+  #Chip = metadata_sample.full.selected.wound$Chip,
+  #wound_closing = metadata_sample.full.selected.wound$wound_closing,
+  wound_time = metadata_sample.full.selected.wound$wound_age,
+  col = list(
+    #case_type = type_case_colors,
+    #body_section = body_section,
+    #Sex = gender_colour,
+    #Chip = chip_colour,
+    #wound_closing = wound_closing,
+    wound_time = wound_time
+  ),
+  annotation_name_side = "left"
+)
+
+
+# Transpose rpms_top if you want to cluster
+
+ht <- Heatmap(
+  t(residuals.degs),
+  cluster_columns = as.dendrogram(hc),
+  cluster_rows = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha,
+  column_title = "Hierarchical Clustering of Samples",
+  heatmap_legend_param = list(title = "Expression"),
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+)
+
+pdf(file.path(out_data, "01_HC_heatmap_annotation_wound_residuals_degs.pdf"), w = 12)
+draw(ht)
+dev.off()
+```
+
