@@ -10,7 +10,7 @@ sh <- suppressPackageStartupMessages
 sh(library(tidyverse))
 sh(library(DOSE))
 
-out.dir.results <- "results_new/05_enrichement_plots/"
+out.dir.results <- "results/05_enrichement_plots/"
 
 if (!dir.exists(out.dir.results)){
   dir.create(out.dir.results)
@@ -28,43 +28,8 @@ load_orsum <- function(path, contrast, direction) {
   load_and_process_orsum(path, contrast) %>% mutate(direction = direction)
 }
 
-# Analysis of the Up + down ----
-# (where Up and down are separated) 
-## Load ORSUM enrichment results ----
-orsum_terms <- do.call("rbind", list(
-  load_orsum("results_new/03_enrichement/Control - Early/ORSUM_bp_up/filteredResult-Summary.tsv", 
-             "Control vs Early", "Up"),
-  
-  load_orsum("results_new/03_enrichement/Control - Intermediary/ORSUM_bp_up/filteredResult-Summary.tsv", 
-             "Control vs Intermediary", "Up"),
-  
-  load_orsum("results_new/03_enrichement/Control - Intermediary/ORSUM_bp_down/filteredResult-Summary.tsv", 
-             "Control vs Intermediary", "Down"),
-  
-  load_orsum("results_new/03_enrichement/Control - Late/ORSUM_bp_up/filteredResult-Summary.tsv", 
-             "Control vs Late", "Up"),
-  
-  load_orsum("results_new/03_enrichement/Control - Late/ORSUM_bp_down/filteredResult-Summary.tsv", 
-             "Control vs Late", "Down"),
-  
-  load_orsum("results_new/03_enrichement/Early vs Intermediary/ORSUM_bp_down/filteredResult-Summary.tsv", 
-             "Early vs Intermediary", "Down"),
-  
-  load_orsum("results_new/03_enrichement/Intermediary vs Late/ORSUM_bp_up/filteredResult-Summary.tsv", 
-             "Intermediary vs Late", "Up"),
-  
-  load_orsum("results_new/03_enrichement/Intermediary vs Late/ORSUM_bp_down/filteredResult-Summary.tsv", 
-             "Intermediary vs Late", "Down")
-))
 
-
-# Filter the most important terms per analysis, keep only those with Ranking <= 15
-orsum_terms <- orsum_terms %>% filter(Representing.term.rank < 15)
-
-
-#The issue with this approach is the fact that some terms that are the same across enrichement have different rank and might disapear 
-#Instead lets jointly summarise 
-orsum_terms <- read.csv("results_new/03_enrichement/Summary_All_Contrasts/filteredResult-Summary.tsv", sep = "\t") %>% 
+orsum_terms <- read.csv("results/03_enrichement/Summary_All_Contrasts/filteredResult-Summary.tsv", sep = "\t") %>% 
   filter(Representing.term.rank < 11) %>% 
   rename(repr_rank = `Representing.term.rank`)
 
@@ -74,24 +39,28 @@ orsum_terms <- orsum_terms %>%
     names_to = "contrast",
     values_to = "rank"
   )
+
 orsum_terms <- orsum_terms %>% filter(rank != "None")
 
 
 # Add direction
-orsum_terms$direction <- ifelse(grepl("^Up", orsum_terms$contrast), "Up", "Down")
+orsum_terms$direction <- ifelse(grepl("^Up", orsum_terms$contrast), "Upregulated", "Downregulated")
 
 #Replace name in the contrast
-contrast_vector <- c("Early vs Intermediary", "Control vs Intermediary", "Intermediary vs Late", "Control vs Late", 
-                     "Control vs Early", "Control vs Intermediary", "Intermediary vs Late", "Control vs Late")
+contrast_vector <- c("control vs intemediate", "intemediate vs prolonged",  "control vs acute", 
+                     "acute vs intemediate", "control vs intemediate", "intemediate vs prolonged", 
+                     "control vs prolonged")
+
 names(contrast_vector) <- names(table(orsum_terms$contrast))
 
 
 orsum_terms$contrast <- unname(contrast_vector[orsum_terms$contrast])
 
 # Order
-orsum_terms$contrast <- factor(orsum_terms$contrast, levels = c("Control vs Early", "Control vs Intermediary",
-                                                                "Early vs Intermediary", "Control vs Late", "Intermediary vs Late"))
-orsum_terms$direction <- factor(orsum_terms$direction, levels = c("Up", "Down"))
+orsum_terms$contrast <- factor(orsum_terms$contrast, levels = c("control vs acute", "control vs intemediate", "acute vs intemediate",
+                                                                "control vs prolonged",
+                                                                "intemediate vs prolonged"))
+orsum_terms$direction <- factor(orsum_terms$direction, levels = c("Upregulated", "Downregulated"))
 
 
 orsum_terms <- orsum_terms %>% 
@@ -104,21 +73,29 @@ orsum_terms$`Representing.term.name` <- factor(orsum_terms$`Representing.term.na
 
 
 ## Plot (GO) Orsum data ----
-pdf(paste0(out.dir.results, "GeneOntology_BP_Orsum.pdf"), w = 15, h = 12)
+pdf(paste0(out.dir.results, "GeneOntology_BP_Orsum.pdf"), w = 13, h = 10)
 plot.go.bp.dir <- ggplot(orsum_terms, aes(x = contrast, y = `Representing.term.name`, colour = direction)) +
   geom_point(size = 4) +
-  scale_colour_manual(name = "Gene Set", values =  c("tomato3", "royalblue")) +
+  scale_fill_manual(values = c("Upregulated" = "#CC6677", "Downregulated" = "#88CCEE")) +
   theme_dose(10) +
   ylab("") +
-  theme(axis.text.x = element_text(size = 14, angle = 90, hjust = 1, vjust = 0.1),
-        axis.text.y = element_text(size = 14),
+  theme(axis.text.x = element_text(size = 18, angle = 90, hjust = 1, vjust = 0.1),
+        axis.text.y = element_text(size = 16),
         axis.title.x = element_text(size = 16),
         plot.margin = margin(l = 100), 
-        legend.text = element_text(size = 16),
+        legend.text = element_text(size = 18),
         legend.title = element_blank()) + 
   xlab("")
 plot(plot.go.bp.dir)
 dev.off()
+
+
+# Save data for GO terms
+
+saveRDS(
+  orsum_terms,
+  file = file.path(out.dir.results, "GO_BP_Orsum_terms.rds")
+)
 
 
 
@@ -128,70 +105,53 @@ load_enrichement_data <- function(filepath, comparison_name){
   df %>% mutate(comparison = comparison_name) %>% slice_head(n = 10)
 }
 
-### KEGG ----
-kegg_terms_early.up <- load_enrichement_data(
-  "results_new/03_enrichement/Control - Early/kegg.up.results.csv",
-  "Control vs Early"
+## KEGG ----
+kegg_terms_acute.up <- load_enrichement_data(
+  "results/03_enrichement/control vs acute/kegg.up.results.csv",
+  "control vs acute"
 ) %>% mutate(direction = "Up")
 
-kegg_terms_intemediary.up <- load_enrichement_data(
-  "results_new/03_enrichement/Control - Intermediary/kegg.up.results.csv",
-  "Control vs Intermediary"
-) %>% mutate(direction = "Up")
 
-kegg_terms_intemediary.down <- load_enrichement_data(
-  "results_new/03_enrichement/Control - Intermediary/kegg.down.results.csv",
-  "Control vs Intermediary"
+kegg_terms_intemediate.down <- load_enrichement_data(
+  "results/03_enrichement/control vs intermediate/kegg.down.results.csv",
+  "control vs intermediate"
 ) %>% mutate(direction = "Down")
 
-kegg_terms_late.up <- load_enrichement_data(
-  "results_new/03_enrichement/Control - Late/kegg.up.results.csv",
-  "Control vs Late"
+kegg_terms_prolonged.up <- load_enrichement_data(
+  "results/03_enrichement/control vs prolonged/kegg.up.results.csv",
+  "control vs prolonged"
 ) %>% mutate(direction = "Up")
 
-kegg_terms_early_intemediary.up <- load_enrichement_data(
-  "results_new/03_enrichement/Early vs Intermediary/kegg.up.results.csv",
-  "Early vs Intermediary"
+kegg_terms_intemediate_prolonged.up <- load_enrichement_data(
+  "results/03_enrichement/intermediate vs prolonged/kegg.up.results.csv",
+  "intermediate vs prolonged"
 ) %>% mutate(direction = "Up")
 
-kegg_terms_early_intemediary.down <- load_enrichement_data(
-  "results_new/03_enrichement/Early vs Intermediary/kegg.down.results.csv",
-  "Early vs Intermediary"
-) %>% mutate(direction = "Down")
-
-kegg_terms_intemediary_late.up <- load_enrichement_data(
-  "results_new/03_enrichement/Intermediary vs Late/kegg.up.results.csv",
-  "Intermediary vs Late"
-) %>% mutate(direction = "Up")
-
-kegg_terms_intemediary_late.down <- load_enrichement_data(
-  "results_new/03_enrichement/Intermediary vs Late/kegg.down.results.csv",
-  "Intermediary vs Late"
+kegg_terms_intemediate_prolonged.down <- load_enrichement_data(
+  "results/03_enrichement/intermediate vs prolonged/kegg.down.results.csv",
+  "intermediate vs prolonged"
 ) %>% mutate(direction = "Down")
 
 KEGG <- do.call("rbind", 
-                list(kegg_terms_early.up,
-                     kegg_terms_intemediary.up,
-                     kegg_terms_intemediary.down,
-                     kegg_terms_late.up,
-                     kegg_terms_early_intemediary.up,
-                     kegg_terms_early_intemediary.down,
-                     kegg_terms_intemediary_late.up,
-                     kegg_terms_intemediary_late.down
+                list(kegg_terms_acute.up,
+                     kegg_terms_intemediate.down,
+                     kegg_terms_prolonged.up,
+                     kegg_terms_intemediate_prolonged.up,
+                     kegg_terms_intemediate_prolonged.down
                 )
 )
 
 
 KEGG <- KEGG %>% 
-  mutate(comparison = factor(comparison, levels = c("Control vs Early", "Control vs Intermediary",
-                                                     "Early vs Intermediary", "Control vs Late", "Intermediary vs Late")),
+  mutate(comparison = factor(comparison, levels = c("control vs acute", "control vs intermediate",
+                                                     "acute vs intermediate", "control vs prolonged", "intermediate vs prolonged")),
          direction = factor(direction, levels = c("Up", "Down"))) %>% 
   arrange(comparison,direction) %>% 
   mutate(Description = factor(Description, levels = unique(Description)[length(unique(Description)):1]))
 
 plot.KEGG.dir <- ggplot(KEGG, aes(x = comparison, y = Description, colour = direction)) +
   geom_point(size = 4) +
-  scale_colour_manual(name = "Gene Set", values =  c("tomato3", "royalblue")) +
+  scale_fill_manual(values = c("Upregulated" = "#CC6677", "Downregulated" = "#88CCEE"))  + 
   theme_dose(10) +
   ylab("") +
   theme(axis.text.x = element_text(size = 14, angle = 90, hjust = 1, vjust = 0.1),

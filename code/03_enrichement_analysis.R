@@ -14,33 +14,14 @@ sh(library(DOSE))
 
 
 #  Make data dir 
-results.dir <- "results_new/"
+results.dir <- "results/"
 out.dir.results <- paste0(results.dir, "03_enrichement/")
 
 if (!dir.exists(out.dir.results)) {dir.create(out.dir.results)}
 
-# Load data ---- 
+# Load results ----
 
-files_to_plot <- list(
-  "Control - Early" = "results_new/02_degs/control_early.txt",
-  "Control - Intermediary" = "results_new/02_degs/control_intermediary.txt",
-  "Control - Late" = "results_new/02_degs/control_late.txt",
-  "Early vs Intermediary" = "results_new/02_degs/early_intermediary.txt",
-  "Intermediary vs Late" = "results_new/02_degs/intermediary_late.txt"
-)
-
-
-fdr_treshold <- 0.05
-
-# Load and filter all files
-degs_data <- lapply(files_to_plot, function(file) {
-  a <- read.csv(file,  sep = "\t", dec = ",", skip = 4) %>% mutate(deg_status = ifelse(FDR.P.val < fdr_treshold, "DEG", "Not DEG"))
-  colnames(a)[4] <- "FC"
-  colnames(a)[6] <- "FDR"
-  
-  a$FC <- -a$FC
-  return (a)
-})
+degs_data <- readRDS(file.path(results.dir, "02_degs", "DGA_filtered.rds"))
 
 # Helper save function
 
@@ -65,13 +46,14 @@ save_results <- function(go_obj, prefix, out_dir, sum_results = T) {
 }
 
 # Enrichment function 
+
 perform_enrichement <- function(degs, name){
   degs.up <- degs %>% 
-    filter(FDR < 0.05 & FC > 1) %>% 
+    filter(FDR.P.val < 0.05 & FC > 1) %>% 
     pull(ID)
   
   degs.down <- degs %>% 
-    filter(FDR < 0.05 & FC < 1) %>% 
+    filter(FDR.P.val < 0.05 & FC < 1) %>% 
     pull(ID)
   
   degs.all <- c(degs.up, degs.down)
